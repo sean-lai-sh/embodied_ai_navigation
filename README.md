@@ -2,12 +2,9 @@
 
 Emulation of scenario where robot needs to go from A to B given ideas of what a "wall" is.
 
-# Instructions for Players
+# Instructions
 1. Install
 ```commandline
-conda update conda
-git clone https://github.com/ai4ce/vis_nav_player.git
-cd vis_nav_player
 conda env create -f environment.yaml
 conda activate game
 ```
@@ -16,9 +13,6 @@ conda activate game
 ```commandline
 python player.py
 ```
-
-3. Modify the player.py to implement your own solutions, 
-unless you have photographic memories!
 
 # Solution Run down
 1. Download exploration data from link provided in the class.
