@@ -1,0 +1,12 @@
+.idea
+*.c
+*.pyd
+/build
+*.so
+*.DS_Store
+*.npy
+__pycache__/
+data/
+/dist
+*egg-info
+*.zip

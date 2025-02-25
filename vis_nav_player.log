@@ -1,0 +1,14 @@
+25-Feb-25 14:43:43 - INFO: player.py is using vis_nav_game 1.2.1
+25-Feb-25 14:43:43 - INFO: vis_nav_game.core version=1.2.1
+25-Feb-25 14:43:43 - INFO: init from /home/seanadmin/vis_nav_player/startup.json: {'ESSENTIAL_FILE_ID': '1CvIOxnKO8Z8NDBh-kKOpUuWEgPinLLSV', 'MAZE_FILE_ID': '1gF7HiL6dMFuTNBi87mvXrShrA93df-RK', 'MAZE_FILE_MD5_KEY': 'ee5b9a353f2c713e8f00333669a06fd0'}
+25-Feb-25 14:43:43 - INFO: Pass checking essential files
+25-Feb-25 14:43:43 - INFO: Verified /home/seanadmin/vis_nav_player/data/maze.json
+25-Feb-25 14:43:43 - INFO: Start loading the map
+25-Feb-25 14:43:43 - INFO: Init rules from {'NAV_START_TIME': 1727755200.0, 'NOISY_MOTION': 1}
+25-Feb-25 14:43:43 - INFO: NAV_START_TIME set to 2024/10/01 00:00:00
+25-Feb-25 14:43:43 - INFO: System time=1740512623.4678125, Internet time=1740512623.5289845, diff=0.0611720085144043
+25-Feb-25 14:43:43 - INFO: NOISY_MOTION set to 1
+25-Feb-25 14:43:43 - INFO: Loaded rules for competition!
+25-Feb-25 14:44:12 - INFO: Finished loading the map: takes 29.00315546989441 s
+25-Feb-25 14:44:14 - INFO: Target Images processing completed.
+25-Feb-25 14:44:14 - INFO: EXPLORATION phase passed. Proceeding to NAVIGATION phase.
