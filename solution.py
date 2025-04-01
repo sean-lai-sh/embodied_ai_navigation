@@ -6,12 +6,16 @@ import cv2
 import numpy as np
 import os
 import pickle
-from sklearn.cluster import KMeans
+from sklearn.cluster import MiniBatchKMeans
 from sklearn.neighbors import BallTree
 from tqdm import tqdm
 from natsort import natsorted
 
 import logging
+
+from FaiSS import FaissIndex
+from graph import build_visual_graph, build_visual_graphdump
+import networkx as nx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 
@@ -34,14 +38,20 @@ class KeyboardPlayerPyGame(Player):
         # SIFT stands for Scale-Invariant Feature Transform
         self.sift = cv2.SIFT_create()
         # Load pre-trained sift features and codebook
-        self.sift_descriptors, self.codebook = None, None
+        self.sift_descriptors, self.codebook, self.faiss_index, self.graph = None, None, None, None
         if os.path.exists("sift_descriptors.npy"):
             self.sift_descriptors = np.load("sift_descriptors.npy")
         if os.path.exists("codebook.pkl"):
             self.codebook = pickle.load(open("codebook.pkl", "rb"))
+        if os.path.exists("faiss_index.pkl"):
+            self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
+        if os.path.exists("graph.pkl"):
+            self.graph = pickle.load(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
         self.database = None
         self.goal = None
+        self.faiss_index = None
+        self.graph = None
 
     def reset(self):
         # Reset the player state
@@ -167,60 +177,75 @@ class KeyboardPlayerPyGame(Player):
     # We store descriptors. But find why OpenCV is 128 Dimensional per keypoint (VERY VERY IMPORTANT )
     # Geneartes n by 128 which n is the num of images, so we have 3000 images
     
-    def get_VLAD(self, img):
+    def get_netVLAD(self, img):
         """
-        Compute VLAD (Vector of Locally Aggregated Descriptors) descriptor for a given image
+        Compute NetVLAD-style descriptor using SIFT descriptors and soft assignment.
         """
-        # We use a SIFT in combination with VLAD as a feature extractor as it offers several benefits
-        # 1. SIFT features are invariant to scale and rotation changes in the image
-        # 2. SIFT features are designed to capture local patterns which makes them more robust against noise
-        # 3. VLAD aggregates local SIFT descriptors into a single compact representation for each image
-        # 4. VLAD descriptors typically require less memory storage compared to storing the original set of SIFT
-        # descriptors for each image. It is more practical for storing and retrieving large image databases efficicently.
-
-        # Pass the image to sift detector and get keypoints + descriptions
-        # Again we only need the descriptors
         _, des = self.sift.detectAndCompute(img, None)
 
-        # Get the cluster labels for each descriptor
+        if des is None or len(des) == 0:
+            return np.zeros(self.codebook.n_clusters * 128)
 
-        # We then predict the cluster labels using the pre-trained codebook
-        # Each descriptor is assigned to a cluster, and the predicted cluster label is returned
-        pred_labels = self.codebook.predict(des)
-        # Get number of clusters that each descriptor belongs to it
+        centroids = self.codebook.cluster_centers_  # (K, D)
+        k = centroids.shape[0]
+        d = des.shape[1]
 
-        # Ball analogy (Color, and Size) if a REALLY blue ball but inbetween small & med size, I will say it goes to Blue. So Strongest to the cluster center
+        # Soft assignment weights: inverse of distance to centroids (Gaussian-style)
+        # Compute L2 distances between each descriptor and each centroid
+        dists = np.linalg.norm(des[:, None, :] - centroids[None, :, :], axis=2)  # (N, K)
+        sigma = 1e-6 + np.std(dists)  # Stability
+        weights = np.exp(-dists**2 / (2 * sigma**2))  # (N, K)
 
+        # Normalize weights so they sum to 1 across clusters
+        weights = weights / (weights.sum(axis=1, keepdims=True) + 1e-8)
 
-        centroids = self.codebook.cluster_centers_
-        # Get the cluster centroids from the codebook
+        # Initialize NetVLAD descriptor
+        netvlad_feature = np.zeros((k, d), dtype=np.float32)
 
-        # Get the number of clusters from the codebook
-        k = self.codebook.n_clusters
-        VLAD_feature = np.zeros([k, des.shape[1]])
+        # Aggregate residuals weighted by soft assignment
+        for cluster_id in range(k):
+            soft_weights = weights[:, cluster_id][:, None]  # (N, 1)
+            residuals = des - centroids[cluster_id]  # (N, D)
+            weighted_residuals = soft_weights * residuals  # (N, D)
+            netvlad_feature[cluster_id] = weighted_residuals.sum(axis=0)
 
-        # Loop over the clusters
-        for i in range(k):
-            # If the current cluster label matches the predicted one
-            if np.sum(pred_labels == i) > 0:
-                # Then, sum the residual vectors (difference between descriptors and cluster centroids)
-                # for all the descriptors assigned to that clusters
-                # axis=0 indicates summing along the rows (each row represents a descriptor)
-                # This way we compute the VLAD vector for the current cluster i
-                # This operation captures not only the presence of features but also their spatial distribution within the image
-                VLAD_feature[i] = np.sum(des[pred_labels==i, :] - centroids[i], axis=0)
-                # 128 by 1 since we have 128 Dimensional descriptors from SIFT
-        VLAD_feature = VLAD_feature.flatten()
-        # Apply power normalization to the VLAD feature vector
-        # It takes the element-wise square root of the absolute values of the VLAD feature vector and then multiplies 
-        # it by the element-wise sign of the VLAD feature vector
-        # This makes the resulting descriptor robust to noice and variations in illumination which helps improve the 
-        # robustness of VPR systems
-        VLAD_feature = np.sign(VLAD_feature)*np.sqrt(np.abs(VLAD_feature))
-        # Finally, the VLAD feature vector is normalized by dividing it by its L2 norm, ensuring that it has unit length
-        VLAD_feature = VLAD_feature/np.linalg.norm(VLAD_feature)
+        # Flatten and normalize
+        netvlad_feature = netvlad_feature.flatten()
 
-        return VLAD_feature
+        # Power normalization (signed square root)
+        netvlad_feature = np.sign(netvlad_feature) * np.sqrt(np.abs(netvlad_feature))
+
+        # L2 normalization
+        netvlad_feature = netvlad_feature / (np.linalg.norm(netvlad_feature) + 1e-12)
+
+        return netvlad_feature
+
+    def netvlad_aggregation(descriptors, centroids):
+        """
+        descriptors: (N, D) SIFT descriptors for one image
+        centroids: (K, D) cluster centers from KMeans
+        Returns: (K * D,) NetVLAD vector
+        """
+        K, D = centroids.shape
+        N = descriptors.shape[0]
+
+        # Assign descriptors to clusters (hard assignment here for simplicity)
+        labels = np.argmin(np.linalg.norm(descriptors[:, None, :] - centroids[None, :, :], axis=2), axis=1)
+
+        # Initialize NetVLAD vector
+        vlad = np.zeros((K, D), dtype=np.float32)
+
+        for i in range(K):
+            if np.sum(labels == i) == 0:
+                continue
+            residuals = descriptors[labels == i] - centroids[i]  # (Ni, D)
+            vlad[i] = residuals.sum(axis=0)
+
+        # Flatten and normalize
+        vlad = vlad.flatten()
+        vlad = vlad / np.linalg.norm(vlad)  # L2 normalize the whole vector
+
+        return vlad
 
     def get_neighbor(self, img):
         """
@@ -235,7 +260,7 @@ class KeyboardPlayerPyGame(Player):
 
     def pre_nav_compute(self):
         """
-        Build BallTree for nearest neighbor search and find the goal ID
+        BuildGraph for A* Pathfinding
         """
         # Compute sift features for images in the database
         if self.sift_descriptors is None:
@@ -244,29 +269,22 @@ class KeyboardPlayerPyGame(Player):
             np.save("sift_descriptors.npy", self.sift_descriptors)
         else:
             print("Loaded SIFT features from sift_descriptors.npy")
-
-        # KMeans clustering algorithm is used to create a visual vocabulary, also known as a codebook,
-        # from the computed SIFT descriptors.
-        # n_clusters = 64: Specifies the number of clusters (visual words) to be created in the codebook. In this case, 64 clusters are being used.
-        # init='k-means++': This specifies the method for initializing centroids. 'k-means++' is a smart initialization technique that selects initial 
-        # cluster centers in a way that speeds up convergence.
-        # n_init=10: Specifies the number of times the KMeans algorithm will be run with different initial centroid seeds. The final result will be 
-        # the best output of n_init consecutive runs in terms of inertia (sum of squared distances).
-        # The fit() method of KMeans is then called with sift_descriptors as input data. 
-        # This fits the KMeans model to the SIFT descriptors, clustering them into n_clusters clusters based on their feature vectors
-
-        # TODO: try tuning the function parameters for better performance
-
+        
         if self.codebook is None:
             print("Computing codebook...")
-            # Increasing computational time according to # clusters & can reduce acc if not enough information.
-            self.codebook = KMeans(n_clusters=128, init='k-means++', n_init=5, verbose=1).fit(self.sift_descriptors)
+            # TODO: Perform Hyper param tuning on cluster size, batch size, and number of iterations
+            MiniBatchKMeans(
+                n_clusters=128,
+                batch_size=10_000,
+                init='k-means++',
+                n_init=5,
+                verbose=1
+            ).fit(self.sift_descriptors)
             pickle.dump(self.codebook, open("codebook.pkl", "wb"))
         else:
             print("Loaded codebook from codebook.pkl")
         
-        # get VLAD emvedding for each image in the exploration phase
-        # Global Feature Extractor.
+        # NetVLAD aggregation for soft assignment since want approximations to create graphs
         if self.database is None:
             self.database = []
             print("Computing VLAD embeddings...")
@@ -276,17 +294,15 @@ class KeyboardPlayerPyGame(Player):
                 VLAD = self.get_VLAD(img)
                 self.database.append(VLAD)
 
-            # Assigns a feature to a cluster centeroid based on proximity
-            # Classify into general clusters.
+            # Build a FAISS index to enable graph-based navigation
+            faiss_index = FaissIndex(dim=self.database[0].shape[0])
+            faiss_index.build_index(self.database, image_ids=exploration_observation)  
+            ## Pickle the FAISS index ####
+            pickle.dump(faiss_index, open("faiss_index.pkl", "wb"))
 
-
-            # Build a BallTree for fast nearest neighbor search
-            # We create this tree to efficiently perform nearest neighbor searches later on which will help us navigate and reach the target location
-            
-            # TODO: try tuning the leaf size for better performance
-            print("Building BallTree...")
-            tree = BallTree(self.database, leaf_size=64)
-            self.tree = tree        
+            ### build graph
+            self.graph = build_visual_graph(exploration_observation, faiss_index.neighbors, faiss_index.distances, connect_temporal=False)    
+            nx.write_gpickle(self.graph, open("graph.pkl", "wb"))  
 
 
     def pre_navigation(self):
@@ -342,7 +358,7 @@ class KeyboardPlayerPyGame(Player):
             return pygame_image
 
         pygame.display.set_caption("KeyboardPlayer:fpv")
-        print("Our target ", self.get_target_images())
+
         # If game has started
         if self._state:
             # If in exploration stage
