@@ -2,6 +2,7 @@
 from vis_nav_game import Player, Action, Phase
 import pygame
 import cv2
+import argparse
 
 import numpy as np
 import os
@@ -14,7 +15,7 @@ from natsort import natsorted
 import logging
 
 from FaiSS import FaissIndex
-from graph import build_visual_graph
+from graph import build_visual_graph, build_visual_graph_with_actions
 import networkx as nx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -33,22 +34,22 @@ class KeyboardPlayerPyGame(Player):
         self.save_dir = "data/images_subsample/"
         if not os.path.exists(self.save_dir):
             print(f"Directory {self.save_dir} does not exist, please download exploration data.")
-
         # Initialize SIFT detector
         # SIFT stands for Scale-Invariant Feature Transform
         self.sift = cv2.SIFT_create()
         # Load pre-trained sift features and codebook
-        self.sift_descriptors, self.codebook, self.faiss_index, self.graph = None, None, None, None
+        self.sift_descriptors, self.codebook, self.database, self.faiss_index, self.graph = None, None, None, None, None
         if os.path.exists("sift_descriptors.npy"):
             self.sift_descriptors = np.load("sift_descriptors.npy")
         if os.path.exists("codebook.pkl"):
             self.codebook = pickle.load(open("codebook.pkl", "rb"))
+        if os.path.exists("database.pkl"):
+            self.database = pickle.load(open("database.pkl", "rb"))
         if os.path.exists("faiss_index.pkl"):
             self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
-        if os.path.exists("graph.pkl"):
-            self.graph = pickle.load(open("graph.pkl", "rb"))
+        # if os.path.exists("graph.pkl"):
+        #     self.graph = pickle.load(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
-        self.database = None
         self.goal = None
         self.faiss_index = None
         self.graph = None
@@ -247,15 +248,17 @@ class KeyboardPlayerPyGame(Player):
 
         return vlad
 
-    def get_neighbor(self, img):
-        """
-        Find the nearest neighbor in the database based on VLAD descriptor
-        """
-        # Get the VLAD feature of the image
-        fpv_desc = self.get_netVLAD(self.fpv)  # or get_VLAD
-        curr_idx, _ = self.faiss_index.query(fpv_desc, k=1)
-        curr_idx = curr_idx[0]
-        return curr_idx
+    def get_neighbor(self, img, k=5):
+        desc = self.get_netVLAD(img)
+        indices, _ = self.faiss_index.query(desc, k=k)
+        for idx in indices:
+            idx = str(idx)
+            if not idx.endswith(".jpg"):
+                idx += ".jpg"
+            if self.graph.has_node(idx):
+                return idx
+        return str(indices[0]) + ".jpg"
+
 
     def pre_nav_compute(self):
         """
@@ -272,7 +275,7 @@ class KeyboardPlayerPyGame(Player):
         if self.codebook is None:
             print("Computing codebook...")
             # TODO: Perform Hyper param tuning on cluster size, batch size, and number of iterations
-            MiniBatchKMeans(
+            self.codebook = MiniBatchKMeans(
                 n_clusters=128,
                 batch_size=10_000,
                 init='k-means++',
@@ -282,26 +285,34 @@ class KeyboardPlayerPyGame(Player):
             pickle.dump(self.codebook, open("codebook.pkl", "wb"))
         else:
             print("Loaded codebook from codebook.pkl")
-        
+        imgDict = self.load_cleaned_filenames()
+        exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg') and x in imgDict])
         # NetVLAD aggregation for soft assignment since want approximations to create graphs
         if self.database is None:
             self.database = []
             print("Computing VLAD embeddings...")
-            exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg')])
+            exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg') and x in imgDict])
             for img in tqdm(exploration_observation, desc="Processing images"):
                 img = cv2.imread(os.path.join(self.save_dir, img))
                 VLAD = self.get_netVLAD(img)
                 self.database.append(VLAD)
-
+            pickle.dump(self.database, open("database.pkl", "wb"))
+        if self.faiss_index is None:
             # Build a FAISS index to enable graph-based navigation
-            faiss_index = FaissIndex(dim=self.database[0].shape[0])
-            faiss_index.build_index(self.database, image_ids=exploration_observation)  
+            self.faiss_index = FaissIndex(dim=self.database[0].shape[0])
+            self.faiss_index.build_index(self.database, image_ids=exploration_observation)  
             ## Pickle the FAISS index ####
-            pickle.dump(faiss_index, open("faiss_index.pkl", "wb"))
-            neighbors, distances = faiss_index.batch_query(self.database, k=5)
-            ### build graph
-            self.graph = build_visual_graph(exploration_observation, neighbors, distances, connect_temporal=False)    
-            pickle.dump(self.graph, open("faiss_index.pkl", "wb")) 
+            pickle.dump(self.faiss_index, open("faiss_index.pkl", "wb"))
+            
+        if self.graph is None:
+            neighbors, distances = self.faiss_index.batch_query(self.database, k=5)
+            import json
+            with open("data/data_info_cleaned.json") as f:
+                steps = json.load(f)
+
+            self.graph = build_visual_graph_with_actions(steps, connect_visual=True, visual_neighbors=neighbors, visual_distances=distances)
+
+            pickle.dump(self.graph, open("graph.pkl", "wb")) 
 
 
     def pre_navigation(self):
@@ -312,37 +323,95 @@ class KeyboardPlayerPyGame(Player):
         self.pre_nav_compute()
         
     def display_next_best_view(self):
-        """
-        Display the next best view based on the current first-person view
-        """
+    #     """
+    #     Display the next best view based on the current FPV by computing
+    #     the shortest graph path to one of the goal images.
+    #     """
+    #     # Get current FPV's closest index in the graph
+    #     curr_idx = self.get_neighbor(self.fpv)
 
-        # TODO: could you write this function in a smarter way to not simply display the image that closely 
-        # matches the current FPV but the image that can efficiently help you reach the target?
+    #     best_next_idx = None
+    #     best_path_len = float("inf")
+    #     best_path = None
 
-        # Get the neighbor of current FPV
-        # In other words, get the image from the database that closely matches current FPV
-        index = self.get_neighbor(self.fpv)
-        # Display the image 5 frames ahead of the neighbor, so that next best view is not exactly same as current FPV
-        best_direction = None
+    #     print(f"Current FPV index: {curr_idx}")
+
+    #     for goal_img in self.goal:
+    #         try:
+    #             goal_idx = self.get_neighbor(goal_img)  # map goal image to graph node
+    #             path = nx.shortest_path(self.graph, source=curr_idx, target=goal_idx, weight='weight')
+
+    #             if len(path) > 1 and len(path) < best_path_len:
+    #                 best_path_len = len(path)
+    #                 best_next_idx = path[1]  # next-best view to take
+    #                 best_path = path
+
+    #         except nx.NetworkXNoPath:
+    #             continue  # skip if no path exists
+
+    #     if best_next_idx is not None:
+    #         print(f"Best path found: {best_path}")
+    #         print(f"Next best index: {best_next_idx}")
+    #         self.display_img_from_id(best_next_idx, "KeyboardPlayer:next_best_view")
+    #         return best_next_idx
+    #     else:
+    #         print("No valid next-best view found.")
+    #         return curr_idx  # fallback to current location
+        """
+        Display the next best view based on the current FPV by computing
+        the shortest graph path to one of the goal images.
+        """
+        curr_idx = self.get_neighbor(self.fpv)
+        if curr_idx not in self.graph:
+            print(f"Current FPV index '{curr_idx}' not in graph.")
+            return curr_idx
+
         best_next_idx = None
         best_path_len = float("inf")
-        print(index)
-        print(self.goal)
-        for direction, goal_idx in self.goal.items():
+        best_path = None
+
+        print(f"Current FPV index: {curr_idx}")
+
+        for goal_img in self.goal:
+            goal_idx = self.get_neighbor(goal_img)
+            if goal_idx not in self.graph:
+                print(f"Goal index '{goal_idx}' not in graph.")
+                continue
+
             try:
-                path = nx.shortest_path(self.graph, source=index, target=goal_idx, weight='weight')
+                path = nx.shortest_path(self.graph, source=curr_idx, target=goal_idx, weight='weight')
+
                 if len(path) > 1 and len(path) < best_path_len:
                     best_path_len = len(path)
                     best_next_idx = path[1]
-                    best_direction = direction
-            except nx.NetworkXNoPath:
-                continue  # Skip directions with no path
+                    best_path = path
+
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                print(f"No path or one node missing between {curr_idx} and {goal_idx}.")
+                continue
 
         if best_next_idx is not None:
-            return best_next_idx, best_direction
+            print(f"Best path found: {best_path}")
+            print(f"Next best index: {best_next_idx}")
+            # remove the .jpg extension
+            best_next_idx = best_next_idx.split(".")[0]
+            self.display_img_from_id(best_next_idx, "KeyboardPlayer:next_best_view")
+            return best_next_idx
         else:
             print("No valid next-best view found.")
-            return index, None
+            return curr_idx
+
+        
+    def load_cleaned_filenames(self, json_path="data/data_info_cleaned.json"):
+        import json
+        # Step 1: Load approved image filenames (just "0001.jpg", etc.)
+        with open(json_path) as f:
+            data = json.load(f)
+        approved_filenames = {entry["image"] for entry in data}  # use a set for fast lookup
+        return approved_filenames
+
+
+
 
 
     def see(self, fpv):
@@ -393,9 +462,7 @@ class KeyboardPlayerPyGame(Player):
                 if self.goal is None:
                     # Get the neighbor nearest to the front view of the target image and set it as goal
                     targets = self.get_target_images()
-                    index = self.get_neighbor(targets[0])
-                    self.goal = index
-                    print(f'Goal ID: {self.goal}')
+                    self.goal = targets
                                 
                 # Key the state of the keys
                 keys = pygame.key.get_pressed()
