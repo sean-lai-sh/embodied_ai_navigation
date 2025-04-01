@@ -14,7 +14,7 @@ from natsort import natsorted
 import logging
 
 from FaiSS import FaissIndex
-from graph import build_visual_graph, build_visual_graphdump
+from graph import build_visual_graph
 import networkx as nx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -46,7 +46,7 @@ class KeyboardPlayerPyGame(Player):
         if os.path.exists("faiss_index.pkl"):
             self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
         if os.path.exists("graph.pkl"):
-            self.graph = pickle.load(open("graph.pkl", "rb"))
+            self.graph = nx.read_gpickle(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
         self.database = None
         self.goal = None
@@ -252,11 +252,10 @@ class KeyboardPlayerPyGame(Player):
         Find the nearest neighbor in the database based on VLAD descriptor
         """
         # Get the VLAD feature of the image
-        q_VLAD = self.get_VLAD(img).reshape(1, -1)
-        # This function returns the index of the closest match of the provided VLAD feature from the database the tree was created
-        # The '1' indicates the we want 1 nearest neighbor
-        _, index = self.tree.query(q_VLAD, 1)
-        return index[0][0]
+        fpv_desc = self.get_netVLAD(self.fpv)  # or get_VLAD
+        curr_idx, _ = self.faiss_index.query(fpv_desc, k=1)
+        curr_idx = curr_idx[0]
+        return curr_idx
 
     def pre_nav_compute(self):
         """
@@ -291,7 +290,7 @@ class KeyboardPlayerPyGame(Player):
             exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg')])
             for img in tqdm(exploration_observation, desc="Processing images"):
                 img = cv2.imread(os.path.join(self.save_dir, img))
-                VLAD = self.get_VLAD(img)
+                VLAD = self.get_netVLAD(img)
                 self.database.append(VLAD)
 
             # Build a FAISS index to enable graph-based navigation
@@ -299,10 +298,10 @@ class KeyboardPlayerPyGame(Player):
             faiss_index.build_index(self.database, image_ids=exploration_observation)  
             ## Pickle the FAISS index ####
             pickle.dump(faiss_index, open("faiss_index.pkl", "wb"))
-
+            neighbors, distances = faiss_index.batch_query(self.database, k=5)
             ### build graph
-            self.graph = build_visual_graph(exploration_observation, faiss_index.neighbors, faiss_index.distances, connect_temporal=False)    
-            nx.write_gpickle(self.graph, open("graph.pkl", "wb"))  
+            self.graph = build_visual_graph(exploration_observation, neighbors, distances, connect_temporal=False)    
+            nx.write_gpickle(self.graph, "graph.pkl") 
 
 
     def pre_navigation(self):
@@ -324,9 +323,27 @@ class KeyboardPlayerPyGame(Player):
         # In other words, get the image from the database that closely matches current FPV
         index = self.get_neighbor(self.fpv)
         # Display the image 5 frames ahead of the neighbor, so that next best view is not exactly same as current FPV
-        self.display_img_from_id(index+3, f'Next Best View')
-        # Display the next best view id along with the goal id to understand how close/far we are from the goal
-        print(f'Next View ID: {index+3} || Goal ID: {self.goal}')
+        best_direction = None
+        best_next_idx = None
+        best_path_len = float("inf")
+        print(index)
+        print(self.goal)
+        for direction, goal_idx in self.goal.items():
+            try:
+                path = nx.shortest_path(self.graph, source=index, target=goal_idx, weight='weight')
+                if len(path) > 1 and len(path) < best_path_len:
+                    best_path_len = len(path)
+                    best_next_idx = path[1]
+                    best_direction = direction
+            except nx.NetworkXNoPath:
+                continue  # Skip directions with no path
+
+        if best_next_idx is not None:
+            return best_next_idx, best_direction
+        else:
+            print("No valid next-best view found.")
+            return index, None
+
 
     def see(self, fpv):
         """
