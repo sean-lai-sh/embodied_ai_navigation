@@ -46,7 +46,7 @@ class KeyboardPlayerPyGame(Player):
         if os.path.exists("faiss_index.pkl"):
             self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
         if os.path.exists("graph.pkl"):
-            self.graph = nx.read_gpickle(open("graph.pkl", "rb"))
+            self.graph = pickle.load(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
         self.database = None
         self.goal = None
@@ -301,7 +301,7 @@ class KeyboardPlayerPyGame(Player):
             neighbors, distances = faiss_index.batch_query(self.database, k=5)
             ### build graph
             self.graph = build_visual_graph(exploration_observation, neighbors, distances, connect_temporal=False)    
-            nx.write_gpickle(self.graph, "graph.pkl") 
+            pickle.dump(self.graph, open("faiss_index.pkl", "wb")) 
 
 
     def pre_navigation(self):
