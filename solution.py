@@ -323,83 +323,65 @@ class KeyboardPlayerPyGame(Player):
         self.pre_nav_compute()
         
     def display_next_best_view(self):
-    #     """
-    #     Display the next best view based on the current FPV by computing
-    #     the shortest graph path to one of the goal images.
-    #     """
-    #     # Get current FPV's closest index in the graph
-    #     curr_idx = self.get_neighbor(self.fpv)
-
-    #     best_next_idx = None
-    #     best_path_len = float("inf")
-    #     best_path = None
-
-    #     print(f"Current FPV index: {curr_idx}")
-
-    #     for goal_img in self.goal:
-    #         try:
-    #             goal_idx = self.get_neighbor(goal_img)  # map goal image to graph node
-    #             path = nx.shortest_path(self.graph, source=curr_idx, target=goal_idx, weight='weight')
-
-    #             if len(path) > 1 and len(path) < best_path_len:
-    #                 best_path_len = len(path)
-    #                 best_next_idx = path[1]  # next-best view to take
-    #                 best_path = path
-
-    #         except nx.NetworkXNoPath:
-    #             continue  # skip if no path exists
-
-    #     if best_next_idx is not None:
-    #         print(f"Best path found: {best_path}")
-    #         print(f"Next best index: {best_next_idx}")
-    #         self.display_img_from_id(best_next_idx, "KeyboardPlayer:next_best_view")
-    #         return best_next_idx
-    #     else:
-    #         print("No valid next-best view found.")
-    #         return curr_idx  # fallback to current location
         """
         Display the next best view based on the current FPV by computing
         the shortest graph path to one of the goal images.
+        Only considers goals that are reachable in the same connected component.
         """
+
+        # --- STEP 1: Get current image's closest visual neighbor in the graph ---
         curr_idx = self.get_neighbor(self.fpv)
         if curr_idx not in self.graph:
             print(f"Current FPV index '{curr_idx}' not in graph.")
             return curr_idx
 
+        print(f"Current FPV index: {curr_idx}")
+
+        # --- STEP 2: Get all nodes reachable from current location (component) ---
+        reachable_nodes = nx.descendants(self.graph, curr_idx) | {curr_idx}
+        print(f"Reachable nodes from {curr_idx}: {len(reachable_nodes)}")
+
+        # --- STEP 3: Filter goal images by which are reachable ---
+        reachable_goals = []
+        for goal_img in self.goal:
+            goal_idx = self.get_neighbor(goal_img)
+            if goal_idx in reachable_nodes:
+                reachable_goals.append((goal_img, goal_idx))
+            else:
+                print(f"Goal '{goal_idx}' not reachable from current location.")
+
+        if not reachable_goals:
+            print("No reachable goals found from current location.")
+            return curr_idx
+
+        # --- STEP 4: Pick best path among reachable goals ---
         best_next_idx = None
         best_path_len = float("inf")
         best_path = None
 
-        print(f"Current FPV index: {curr_idx}")
-
-        for goal_img in self.goal:
-            goal_idx = self.get_neighbor(goal_img)
-            if goal_idx not in self.graph:
-                print(f"Goal index '{goal_idx}' not in graph.")
-                continue
-
+        for goal_img, goal_idx in reachable_goals:
             try:
                 path = nx.shortest_path(self.graph, source=curr_idx, target=goal_idx, weight='weight')
-
                 if len(path) > 1 and len(path) < best_path_len:
                     best_path_len = len(path)
                     best_next_idx = path[1]
                     best_path = path
-
             except (nx.NetworkXNoPath, nx.NodeNotFound):
-                print(f"No path or one node missing between {curr_idx} and {goal_idx}.")
+                print(f"No valid path from {curr_idx} to {goal_idx}")
                 continue
 
+        # --- STEP 5: Display result ---
         if best_next_idx is not None:
             print(f"Best path found: {best_path}")
             print(f"Next best index: {best_next_idx}")
-            # remove the .jpg extension
+            # remove .jpg extension
             best_next_idx = best_next_idx.split(".")[0]
             self.display_img_from_id(best_next_idx, "KeyboardPlayer:next_best_view")
             return best_next_idx
         else:
             print("No valid next-best view found.")
             return curr_idx
+
 
         
     def load_cleaned_filenames(self, json_path="data/data_info_cleaned.json"):
