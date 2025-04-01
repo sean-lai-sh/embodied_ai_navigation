@@ -146,6 +146,26 @@ class KeyboardPlayerPyGame(Player):
             cv2.waitKey(1)
         else:
             print(f"Image with ID {id} does not exist")
+    
+    def display_several_img_from_id(self, id, num, pad, window_name):
+        images = []
+        for i in range(num):
+            current_id = id + i * pad
+            path = self.save_dir + str(current_id) + ".jpg"
+            if os.path.exists(path):
+                img = cv2.imread(path)
+                images.append(img)
+            else:
+                print(f"Image with ID {current_id} does not exist")
+        
+        if images:
+            # Concatenate images horizontally
+            concat_img = cv2.hconcat(images)
+            cv2.imshow(window_name, concat_img)
+            cv2.waitKey(1)
+        else:
+            print("No valid images to display")
+        
 
     def compute_sift_features(self):
         """
@@ -308,7 +328,7 @@ class KeyboardPlayerPyGame(Player):
         # In other words, get the image from the database that closely matches current FPV
         index = self.get_neighbor(self.fpv)
         # Display the image 5 frames ahead of the neighbor, so that next best view is not exactly same as current FPV
-        self.display_img_from_id(index+3, f'Next Best View')
+        self.display_several_img_from_id(index, 5, 2, "Next Best View")
         # Display the next best view id along with the goal id to understand how close/far we are from the goal
         print(f'Next View ID: {index+3} || Goal ID: {self.goal}')
 
@@ -367,7 +387,7 @@ class KeyboardPlayerPyGame(Player):
                 # Key the state of the keys
                 keys = pygame.key.get_pressed()
                 # If 'q' key is pressed, then display the next best view based on the current FPV
-                if keys[pygame.K_q]:
+                if keys:
                     self.display_next_best_view()
 
         # Display the first-person view image on the pygame screen
