@@ -33,3 +33,4 @@ class FaissIndex:
         query_descriptors = np.array(query_descriptors, dtype='float32')
         D, I = self.index.search(query_descriptors, k)
         return I, D
+    

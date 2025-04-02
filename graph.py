@@ -1,4 +1,5 @@
 import networkx as nx
+import numpy as np
 
 def build_visual_graph(image_files, neighbors, distances, connect_temporal=False):
     """
@@ -64,3 +65,47 @@ def build_visual_graph_with_actions(steps, connect_visual=False, visual_neighbor
                     G.add_edge(src, tgt, action="VISUAL", weight=dist)
 
     return G
+
+
+def netvlad_distance_heuristic(u, v, netvlad_lookup):
+    """
+    A simple heuristic if you only have NetVLAD embeddings, not real-world coordinates.
+    netvlad_lookup: dict or array that lets you get the descriptor for any image ID.
+    We return the L2 distance between descriptors for nodes u and v.
+    
+    NOTE: This might not be strictly 'admissible' for true path cost. 
+    If you need guaranteed optimal A*, you need a consistent or lower-bound heuristic.
+    """
+    desc_u = netvlad_lookup[u]
+    desc_v = netvlad_lookup[v]
+    return np.linalg.norm(desc_u - desc_v)
+
+
+import networkx as nx
+
+def run_a_star(graph, start_id, goal_id, netvlad_lookup=None):
+    """
+    Run A* on the graph from start_id to goal_id, optionally using a netvlad distance heuristic.
+    If netvlad_lookup is None, we do A* with no heuristic -> effectively Dijkstra's search.
+    """
+    if netvlad_lookup is not None:
+        # Define a function that NetworkX can call:
+        def heuristic(u, v):
+            return netvlad_distance_heuristic(u, v, netvlad_lookup)
+        
+        path = nx.astar_path(
+            graph,
+            start_id,  # source
+            goal_id,   # target
+            heuristic=heuristic,
+            weight='weight'  # Use the 'weight' field on edges
+        )
+    else:
+        # No heuristic, fallback to Dijkstra:
+        path = nx.shortest_path(
+            graph,
+            start_id,
+            goal_id,
+            weight='weight'
+        )
+    return path

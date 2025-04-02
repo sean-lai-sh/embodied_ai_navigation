@@ -51,8 +51,8 @@ class KeyboardPlayerPyGame(Player):
         #     self.graph = pickle.load(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
         self.goal = None
-        self.faiss_index = None
         self.graph = None
+        self.nvladlookup = None
 
     def reset(self):
         # Reset the player state
@@ -177,7 +177,39 @@ class KeyboardPlayerPyGame(Player):
     # SIFT Gets us scale invariant (so featues can always be detected)
     # We store descriptors. But find why OpenCV is 128 Dimensional per keypoint (VERY VERY IMPORTANT )
     # Geneartes n by 128 which n is the num of images, so we have 3000 images
-    
+
+
+    def run_a_star(self, source_id, target_id):
+        """
+        Run A* search on self.graph from source_id to target_id
+        using a NetVLAD-based heuristic (if we have netvlad_lookup).
+        Falls back to shortest_path if netvlad_lookup is missing or incomplete.
+        """
+        import networkx as nx
+        if not hasattr(self, 'netvlad_lookup'):
+            # If no descriptor lookup is available, just use Dijkstra / BFS
+            return nx.shortest_path(self.graph, source=source_id, target=target_id, weight='weight')
+
+        def netvlad_heuristic(u, v):
+            # Look up descriptors and compute L2 distance
+            # (Check that both are in the lookup dict)
+            if u not in self.netvlad_lookup or v not in self.netvlad_lookup:
+                return 0.0
+            desc_u = self.netvlad_lookup[u]
+            desc_v = self.netvlad_lookup[v]
+            return np.linalg.norm(desc_u - desc_v)
+
+        # Now run A* with that heuristic
+        return nx.astar_path(
+            self.graph,
+            source=source_id,
+            target=target_id,
+            heuristic=netvlad_heuristic,
+            weight='weight'
+        )
+
+
+
     def get_netVLAD(self, img):
         """
         Compute NetVLAD-style descriptor using SIFT descriptors and soft assignment.
@@ -259,6 +291,29 @@ class KeyboardPlayerPyGame(Player):
                 return idx
         return str(indices[0]) + ".jpg"
 
+    def build_knn_graph(self, k=5):
+        """
+        Returns an adjacency list representation of the k-NN graph.
+        E.g. adjacency[node_id] = [(neighbor_id, distance), ...].
+        """
+        # Get all descriptors again or store them from build_index
+        # Suppose you stored them in self.descriptors:
+        if not hasattr(self, 'descriptors'):
+            raise ValueError("Descriptors not stored. Save them in build_index first.")
+
+        I, D = self.batch_query(self.descriptors, k=k)
+        adjacency = {}
+        for idx in range(len(self.descriptors)):
+            neighbors = []
+            for neighbor_idx, dist in zip(I[idx], D[idx]):
+                if neighbor_idx == idx:
+                    # skip self-loop if it appears
+                    continue
+                neighbor_id = self.image_ids[neighbor_idx]
+                neighbors.append((neighbor_id, dist))
+            node_id = self.image_ids[idx]
+            adjacency[node_id] = neighbors
+        return adjacency
 
     def pre_nav_compute(self):
         """
@@ -276,22 +331,22 @@ class KeyboardPlayerPyGame(Player):
             print("Computing codebook...")
             # TODO: Perform Hyper param tuning on cluster size, batch size, and number of iterations
             self.codebook = MiniBatchKMeans(
-                n_clusters=128,
-                batch_size=10_000,
+                n_clusters=64,
+                batch_size=5000,
                 init='k-means++',
                 n_init=5,
-                verbose=1
+                verbose=1,
             ).fit(self.sift_descriptors)
             pickle.dump(self.codebook, open("codebook.pkl", "wb"))
         else:
             print("Loaded codebook from codebook.pkl")
-        imgDict = self.load_cleaned_filenames()
-        exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg') and x in imgDict])
+        # imgDict = self.load_cleaned_filenames()
+        exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg')])
         # NetVLAD aggregation for soft assignment since want approximations to create graphs
         if self.database is None:
             self.database = []
             print("Computing VLAD embeddings...")
-            exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg') and x in imgDict])
+            exploration_observation = natsorted([x for x in os.listdir(self.save_dir) if x.endswith('.jpg')])
             for img in tqdm(exploration_observation, desc="Processing images"):
                 img = cv2.imread(os.path.join(self.save_dir, img))
                 VLAD = self.get_netVLAD(img)
@@ -305,14 +360,13 @@ class KeyboardPlayerPyGame(Player):
             pickle.dump(self.faiss_index, open("faiss_index.pkl", "wb"))
             
         if self.graph is None:
-            neighbors, distances = self.faiss_index.batch_query(self.database, k=5)
-            import json
-            with open("data/data_info_cleaned.json") as f:
-                steps = json.load(f)
 
-            self.graph = build_visual_graph_with_actions(steps, connect_visual=True, visual_neighbors=neighbors, visual_distances=distances)
-
+            neighbors, distances = self.faiss_index.batch_query(self.database, k=10)
+            self.graph = build_visual_graph(exploration_observation, neighbors, distances)
             pickle.dump(self.graph, open("graph.pkl", "wb")) 
+        if self.nvladlookup is None:
+            self.nvladlookup = dict(zip(exploration_observation, self.database))
+
 
 
     def pre_navigation(self):
@@ -325,62 +379,62 @@ class KeyboardPlayerPyGame(Player):
     def display_next_best_view(self):
         """
         Display the next best view based on the current FPV by computing
-        the shortest graph path to one of the goal images.
+        the shortest graph path to one of the goal images using A*.
         Only considers goals that are reachable in the same connected component.
         """
 
-        # --- STEP 1: Get current image's closest visual neighbor in the graph ---
+        # --- STEP 1: Find the closest visual neighbor to the current FPV ---
         curr_idx = self.get_neighbor(self.fpv)
+
         if curr_idx not in self.graph:
             print(f"Current FPV index '{curr_idx}' not in graph.")
             return curr_idx
 
         print(f"Current FPV index: {curr_idx}")
 
-        # --- STEP 2: Get all nodes reachable from current location (component) ---
+        # --- STEP 2: (Optional) Check reachability from curr_idx using NetworkX (descendants)
         reachable_nodes = nx.descendants(self.graph, curr_idx) | {curr_idx}
         print(f"Reachable nodes from {curr_idx}: {len(reachable_nodes)}")
 
-        # --- STEP 3: Filter goal images by which are reachable ---
-        reachable_goals = []
-        for goal_img in self.goal:
-            goal_idx = self.get_neighbor(goal_img)
-            if goal_idx in reachable_nodes:
-                reachable_goals.append((goal_img, goal_idx))
-            else:
-                print(f"Goal '{goal_idx}' not reachable from current location.")
-
-        if not reachable_goals:
-            print("No reachable goals found from current location.")
-            return curr_idx
-
-        # --- STEP 4: Pick best path among reachable goals ---
         best_next_idx = None
-        best_path_len = float("inf")
+        best_path_len = float('inf')
         best_path = None
 
-        for goal_img, goal_idx in reachable_goals:
+        # --- STEP 3: For each goal image, run A* from curr_idx to goal_idx ---
+        for goal_img in self.goal:
+            goal_idx = self.get_neighbor(goal_img)
+
+            if goal_idx not in self.graph:
+                print(f"Goal '{goal_idx}' not in graph.")
+                continue
+
             try:
-                path = nx.shortest_path(self.graph, source=curr_idx, target=goal_idx, weight='weight')
+                path = self.run_a_star(curr_idx, goal_idx)
+                # path is a list of nodes (filenames), e.g. ["0001.jpg", "0078.jpg", ... , "0230.jpg"]
+
                 if len(path) > 1 and len(path) < best_path_len:
                     best_path_len = len(path)
-                    best_next_idx = path[1]
+                    best_next_idx = path[1]  # The node we move to next
                     best_path = path
+
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 print(f"No valid path from {curr_idx} to {goal_idx}")
                 continue
 
-        # --- STEP 5: Display result ---
-        if best_next_idx is not None:
-            print(f"Best path found: {best_path}")
-            print(f"Next best index: {best_next_idx}")
-            # remove .jpg extension
-            best_next_idx = best_next_idx.split(".")[0]
-            self.display_img_from_id(best_next_idx, "KeyboardPlayer:next_best_view")
-            return best_next_idx
-        else:
-            print("No valid next-best view found.")
+        # --- STEP 4: If no best_next_idx was found, no reachable goals from here ---
+        if best_next_idx is None:
+            print("No reachable goals found from current location.")
             return curr_idx
+
+        # --- STEP 5: Display the result ---
+        print(f"Best path found: {best_path}")
+        print(f"Next best index: {best_next_idx}")
+
+        # Remove ".jpg" extension so display_img_from_id() can handle the ID
+        next_id_stripped = best_next_idx.split(".")[0]
+        self.display_img_from_id(next_id_stripped, "KeyboardPlayer:next_best_view")
+        return best_next_idx
+
 
 
         
