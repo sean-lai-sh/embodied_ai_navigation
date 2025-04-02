@@ -328,7 +328,7 @@ class KeyboardPlayerPyGame(Player):
         # In other words, get the image from the database that closely matches current FPV
         index = self.get_neighbor(self.fpv)
         # Display the image 5 frames ahead of the neighbor, so that next best view is not exactly same as current FPV
-        self.display_several_img_from_id(index, 5, 2, "Next Best View")
+        self.display_several_img_from_id(index, 2, 2, "Next Best View")
         # Display the next best view id along with the goal id to understand how close/far we are from the goal
         print(f'Next View ID: {index+3} || Goal ID: {self.goal}')
 

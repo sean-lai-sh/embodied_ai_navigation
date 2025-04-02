@@ -11,7 +11,7 @@ pygame.display.set_caption("Maze Exploration Map")
 clock = pygame.time.Clock()
 
 # Load exploration steps from a JSON file
-with open("data/data_info.json", "r") as f:
+with open("data_info.json", "r") as f:
     data = json.load(f)
 
 # Movement parameters
@@ -23,7 +23,7 @@ zoom_step = 0.1
 pan_x, pan_y = 0, 0
 
 # Virtual canvas to hold the full explored area
-canvas_size = 50000
+canvas_size = 5000
 virtual_canvas = pygame.Surface((canvas_size, canvas_size))
 virtual_canvas.fill((107, 107, 107))
 
