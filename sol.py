@@ -48,14 +48,14 @@ class KeyboardPlayerPyGame(Player):
 
         # Potentially load from disk if files exist
         # TODO: REMEMBER THAT POST TRAINING TO UN COMMENT THE FILES
-        # if os.path.exists("sift_descriptors.npy"):
-        #     self.sift_descriptors = np.load("sift_descriptors.npy")
-        # if os.path.exists("codebook.pkl"):
-        #     self.codebook = pickle.load(open("codebook.pkl", "rb"))
-        # if os.path.exists("database.pkl"):
-        #     self.database = pickle.load(open("database.pkl", "rb"))
-        # if os.path.exists("faiss_index.pkl"):
-        #     self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
+        if os.path.exists("sift_descriptors.npy"):
+            self.sift_descriptors = np.load("sift_descriptors.npy")
+        if os.path.exists("codebook.pkl"):
+            self.codebook = pickle.load(open("codebook.pkl", "rb"))
+        if os.path.exists("database.pkl"):
+            self.database = pickle.load(open("database.pkl", "rb"))
+        if os.path.exists("faiss_index.pkl"):
+            self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
         # if os.path.exists("graph.pkl"):
         #     self.graph = pickle.load(open("graph.pkl", "rb"))
 
@@ -229,14 +229,15 @@ class KeyboardPlayerPyGame(Player):
         """
         desc = self.get_netVLAD(img)
         indices, _ = self.faiss_index.query(desc, k=k)
+        lst = []
         for idx in indices:
             idx = str(idx)
             if not idx.endswith(".jpg"):
                 idx += ".jpg"
             if self.graph.has_node(idx):
-                return idx
+                lst.push(idx)
         # Fallback: if none of the top-k neighbors are in the graph, return the first index
-        return str(indices[0]) + ".jpg"
+        return lst
 
     def pre_nav_compute(self):
         """ Build or load the SIFT/NetVLAD/FAISS/Graph so we can run A* later. """
@@ -289,7 +290,7 @@ class KeyboardPlayerPyGame(Player):
         # Build or load the k-NN graph
         if self.graph is None:
             print("Building k-NN graph from FAISS neighbors...")
-            neighbors, distances = self.faiss_index.batch_query(self.database, k=10)
+            neighbors, distances = self.faiss_index.batch_query(self.database, k=100)
             # Use your function build_visual_graph(...) or build_visual_graph_with_actions(...)
             self.graph = build_visual_graph(exploration_observation, neighbors, distances)
             pickle.dump(self.graph, open("graph.pkl", "wb"))
@@ -309,17 +310,17 @@ class KeyboardPlayerPyGame(Player):
     def display_next_best_view(self):
         """
         Displays the next best view by running A* from the current FPV's closest neighbor
-        to each of our goal images. Picks whichever path is shortest.
+        to the neighbors of each goal image. Picks the shortest path and shows the next step.
         """
-        # 1) Find the closest image node in the graph to our current FPV
-        curr_idx = self.get_neighbor(self.fpv)
-        if curr_idx not in self.graph:
-            print(f"Current FPV index '{curr_idx}' not in graph.")
-            return curr_idx
+        curr_idxs = self.get_neighbor(self.fpv)
+        curr_idx = next((idx for idx in curr_idxs if idx in self.graph), None)
+
+        if curr_idx is None:
+            print("None of the current FPV neighbors are in the graph.")
+            return None
 
         print(f"Current FPV index: {curr_idx}")
 
-        # 2) Optionally check reachable nodes from curr_idx
         reachable_nodes = nx.descendants(self.graph, curr_idx) | {curr_idx}
         print(f"Reachable nodes from {curr_idx}: {len(reachable_nodes)}")
 
@@ -327,37 +328,34 @@ class KeyboardPlayerPyGame(Player):
         best_path_len = float('inf')
         best_path = None
 
-        # 3) For each goal view, run A* from curr_idx to that goal
         for goal_img in self.goal:
-            goal_idx = self.get_neighbor(goal_img)
-            if goal_idx not in self.graph:
-                print(f"Goal '{goal_idx}' not in graph.")
-                continue
+            goal_neighbors = self.get_neighbor(goal_img)
 
-            try:
-                path = self.run_a_star(curr_idx, goal_idx)
-                if len(path) > 1 and len(path) < best_path_len:
-                    best_path_len = len(path)
-                    best_next_idx = path[1]
-                    best_path = path
+            for goal_idx in goal_neighbors:
+                if goal_idx not in self.graph or goal_idx not in reachable_nodes:
+                    continue
 
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                print(f"No valid path from {curr_idx} to {goal_idx}")
-                continue
+                try:
+                    path = self.run_a_star(curr_idx, goal_idx)
+                    if len(path) > 1 and len(path) < best_path_len:
+                        best_path_len = len(path)
+                        best_next_idx = path[1]
+                        best_path = path
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    continue
 
-        # 4) If we have no best_next_idx, no reachable goals were found
         if best_next_idx is None:
             print("No reachable goals found from current location.")
             return curr_idx
 
-        # 5) Display the result
         print(f"Best path found: {best_path}")
         print(f"Next best index: {best_next_idx}")
 
-        # Remove ".jpg" to pass to display_img_from_id
         next_id_stripped = best_next_idx.split(".")[0]
         self.display_img_from_id(next_id_stripped, "KeyboardPlayer:next_best_view")
+
         return best_next_idx
+
 
     def load_cleaned_filenames(self, json_path="data/data_info_cleaned.json"):
         """ Example helper to load 'approved' images from a JSON. """

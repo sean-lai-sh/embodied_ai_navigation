@@ -31,7 +31,7 @@ class KeyboardPlayerPyGame(Player):
         super(KeyboardPlayerPyGame, self).__init__()
         
         # Variables for reading exploration data
-        self.save_dir = "data/images_subsample/"
+        self.save_dir = "data/Images/"
         if not os.path.exists(self.save_dir):
             print(f"Directory {self.save_dir} does not exist, please download exploration data.")
         # Initialize SIFT detector
@@ -47,8 +47,8 @@ class KeyboardPlayerPyGame(Player):
             self.database = pickle.load(open("database.pkl", "rb"))
         if os.path.exists("faiss_index.pkl"):
             self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
-        # if os.path.exists("graph.pkl"):
-        #     self.graph = pickle.load(open("graph.pkl", "rb"))
+        if os.path.exists("graph.pkl"):
+            self.graph = pickle.load(open("graph.pkl", "rb"))
         # Initialize database for storing VLAD descriptors of FPV
         self.goal = None
         self.graph = None
@@ -283,13 +283,18 @@ class KeyboardPlayerPyGame(Player):
     def get_neighbor(self, img, k=5):
         desc = self.get_netVLAD(img)
         indices, _ = self.faiss_index.query(desc, k=k)
+        
         for idx in indices:
-            idx = str(idx)
-            if not idx.endswith(".jpg"):
-                idx += ".jpg"
-            if self.graph.has_node(idx):
-                return idx
-        return str(indices[0]) + ".jpg"
+            idx_str = str(idx)
+            if not idx_str.endswith(".jpg"):
+                idx_str += ".jpg"
+            if self.graph.has_node(idx_str):
+                return idx_str
+
+        # None of the nearest neighbors were found in the graph
+        print(f"[WARN] No valid neighbor found in graph for given image.")
+        return None
+
 
     def build_knn_graph(self, k=5):
         """
@@ -438,7 +443,7 @@ class KeyboardPlayerPyGame(Player):
 
 
         
-    def load_cleaned_filenames(self, json_path="data/data_info_cleaned.json"):
+    def load_cleaned_filenames(self, json_path="data/data_info.json"):
         import json
         # Step 1: Load approved image filenames (just "0001.jpg", etc.)
         with open(json_path) as f:
