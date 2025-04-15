@@ -4,7 +4,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 from tqdm import tqdm
 import numpy as np
-import timm  # if using a pretrained GeM-compatible model
+import timm  
 from natsort import natsorted
 
 class GeMFeatureExtractor:

@@ -48,16 +48,16 @@ class KeyboardPlayerPyGame(Player):
 
         # Potentially load from disk if files exist
         # TODO: REMEMBER THAT POST TRAINING TO UN COMMENT THE FILES
-        # if os.path.exists("sift_descriptors.npy"):
-        #     self.sift_descriptors = np.load("sift_descriptors.npy")
-        # if os.path.exists("codebook.pkl"):
-        #     self.codebook = pickle.load(open("codebook.pkl", "rb"))
-        # if os.path.exists("database.pkl"):
-        #     self.database = pickle.load(open("database.pkl", "rb"))
-        # if os.path.exists("faiss_index.pkl"):
-        #     self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
-        # if os.path.exists("graph.pkl"):
-        #     self.graph = pickle.load(open("graph.pkl", "rb"))
+        if os.path.exists("sift_descriptors.npy"):
+            self.sift_descriptors = np.load("sift_descriptors.npy")
+        if os.path.exists("codebook.pkl"):
+            self.codebook = pickle.load(open("codebook.pkl", "rb"))
+        if os.path.exists("database.pkl"):
+            self.database = pickle.load(open("database.pkl", "rb"))
+        if os.path.exists("faiss_index.pkl"):
+            self.faiss_index = pickle.load(open("faiss_index.pkl", "rb"))
+        if os.path.exists("graph.pkl"):
+            self.graph = pickle.load(open("graph.pkl", "rb"))
 
         # Navigation
         self.goal = None
@@ -205,22 +205,6 @@ class KeyboardPlayerPyGame(Player):
         # L2 normalize
         netvlad_feature = netvlad_feature / (np.linalg.norm(netvlad_feature) + 1e-12)
         return netvlad_feature
-
-    def netvlad_aggregation(descriptors, centroids):
-        """
-        A simpler (hard assignment) version of NetVLAD. Not used in this pipeline,
-        but kept here for reference.
-        """
-        K, D = centroids.shape
-        labels = np.argmin(np.linalg.norm(descriptors[:, None, :] - centroids[None, :, :], axis=2), axis=1)
-        vlad = np.zeros((K, D), dtype=np.float32)
-        for i in range(K):
-            if np.sum(labels == i) == 0:
-                continue
-            residuals = descriptors[labels == i] - centroids[i]
-            vlad[i] = residuals.sum(axis=0)
-        vlad = vlad.flatten()
-        return vlad / np.linalg.norm(vlad)
 
     def get_neighbor(self, img, k=5):
         """
